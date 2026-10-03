@@ -88,11 +88,9 @@ async function repostSticky(channel) {
             note.lastMessageId = null;
         }
 
-        for (let i ; i < notes.length; i++) {
-            const sent = await channel.send(
-                "" + (i) + "" + notes[i].content
-            );
-            notes[i].lastMessageId = sent.id;
+        for (const note of notes) {
+            const sent = await channel.send(note.content);
+            note.lastMessageId = sent.id;
         }
 
         saveStickies();
@@ -265,7 +263,7 @@ client.on("messageCreate", async (message) => {
         }
 
         saveStickies();
-        await repostSticky(message.channel); // renumbers the rest
+        await repostSticky(message.channel);
         return;
     }
 
