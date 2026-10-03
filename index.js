@@ -67,7 +67,7 @@ async function repostSticky(channel) {
 
     try {
         await deleteOld(channel, sticky);
-        const sent = await channel.send("📌 **Sticky note**\n" + sticky.content);
+        const sent = await channel.send("\n" + sticky.content);
         sticky.lastMessageId = sent.id;
         saveStickies();
     } catch (error) {
