@@ -88,7 +88,7 @@ async function repostSticky(channel) {
             note.lastMessageId = null;
         }
 
-        for (let i = 0; i < notes.length; i++) {
+        for (let i ; i < notes.length; i++) {
             const sent = await channel.send(
                 "" + (i) + "" + notes[i].content
             );
