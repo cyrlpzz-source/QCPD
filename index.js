@@ -42,6 +42,7 @@ try {
 
 function saveStickies() {
     try {
+        fs.mkdirSync(path.dirname(STICKY_FILE), { recursive: true });
         fs.writeFileSync(STICKY_FILE, JSON.stringify(stickies, null, 2));
     } catch (error) {
         console.error("Failed to save stickies:", error.message);
