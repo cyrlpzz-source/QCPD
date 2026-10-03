@@ -1,0 +1,11 @@
+{
+  "name": "sticky-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "engines": { "node": "22.x" },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.2.2"
+  }
+}
