@@ -149,13 +149,13 @@ client.on("messageCreate", async (message) => {
         await deleteOld(message.channel, sticky);
         delete stickies[message.channel.id];
         saveStickies();
-        return message.reply("📌 Sticky note removed.");
+        return message.reply("");
     }
 
     if (command === "stickyhelp") {
         return message.reply(
             [
-                "**📌 STICKY BOT**",
+                "****",
                 "`!sticky <note>` — Keep a note at the bottom of this channel",
                 "`!unsticky` — Remove the note",
                 "Needs the Manage Messages permission."
