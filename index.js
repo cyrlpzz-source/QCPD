@@ -10,6 +10,7 @@ const {
 } = require("discord.js");
 
 const PREFIX = "!";
+const MAX_NOTES = 5;
 
 if (!process.env.TOKEN) {
     console.error("ERROR: TOKEN is missing.");
@@ -30,14 +31,23 @@ const STICKY_FILE =
     process.env.STICKY_PATH ||
     path.join(__dirname, "stickies.json");
 
+// stickies[channelId] = [ { content, lastMessageId }, ... ]
 let stickies = {};
 
 try {
     if (fs.existsSync(STICKY_FILE)) {
         stickies = JSON.parse(fs.readFileSync(STICKY_FILE, "utf8"));
+
+        // convert the old one-note-per-channel format
+        for (const id of Object.keys(stickies)) {
+            if (!Array.isArray(stickies[id])) {
+                stickies[id] = [stickies[id]];
+            }
+        }
     }
 } catch (error) {
     console.error("Failed to load stickies:", error.message);
+    stickies = {};
 }
 
 function saveStickies() {
@@ -52,26 +62,44 @@ function saveStickies() {
 /* ---------- sticky logic ---------- */
 
 const timers = new Map();
+const busy = new Set();
 
-async function deleteOld(channel, sticky) {
-    if (!sticky.lastMessageId) return;
-    const old = await channel.messages
-        .fetch(sticky.lastMessageId)
-        .catch(() => null);
+async function deleteMessage(channel, messageId) {
+    if (!messageId) return;
+    const old = await channel.messages.fetch(messageId).catch(() => null);
     if (old) await old.delete().catch(() => {});
 }
 
 async function repostSticky(channel) {
-    const sticky = stickies[channel.id];
-    if (!sticky) return;
+    const notes = stickies[channel.id];
+    if (!notes || notes.length === 0) return;
+
+    // avoid two reposts running at once (this causes duplicates)
+    if (busy.has(channel.id)) {
+        scheduleSticky(channel);
+        return;
+    }
+
+    busy.add(channel.id);
 
     try {
-        await deleteOld(channel, sticky);
-        const sent = await channel.send("\n" + sticky.content);
-        sticky.lastMessageId = sent.id;
+        for (const note of notes) {
+            await deleteMessage(channel, note.lastMessageId);
+            note.lastMessageId = null;
+        }
+
+        for (let i = 0; i < notes.length; i++) {
+            const sent = await channel.send(
+                "📌 **Sticky #" + (i + 1) + "**\n" + notes[i].content
+            );
+            notes[i].lastMessageId = sent.id;
+        }
+
         saveStickies();
     } catch (error) {
         console.error("Sticky repost error:", error.message);
+    } finally {
+        busy.delete(channel.id);
     }
 }
 
@@ -104,7 +132,7 @@ client.once("clientReady", () => {
 client.on("messageCreate", async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    /* normal chat: repost the sticky after the channel goes quiet */
+    // normal chat: repost the stickies after the channel goes quiet
     if (!message.content.startsWith(PREFIX)) {
         scheduleSticky(message.channel);
         return;
@@ -113,11 +141,15 @@ client.on("messageCreate", async (message) => {
     const body = message.content.slice(PREFIX.length).trim();
     const command = body.split(/\s+/)[0].toLowerCase();
     const content = body.slice(command.length).trim();
+    const channelId = message.channel.id;
 
+    const staffCommands = ["sticky", "unsticky", "editsticky"];
+    if (staffCommands.includes(command) && !canManage(message)) {
+        return message.reply("You need the Manage Messages permission to do that.");
+    }
+
+    /* ----- !sticky <note> : add a note ----- */
     if (command === "sticky") {
-        if (!canManage(message)) {
-            return message.reply("You need the Manage Messages permission to do that.");
-        }
         if (!content) {
             return message.reply("**Usage:** `!sticky <your note>`");
         }
@@ -125,40 +157,128 @@ client.on("messageCreate", async (message) => {
             return message.reply("That note is too long. Keep it under 1900 characters.");
         }
 
-        const old = stickies[message.channel.id];
-        stickies[message.channel.id] = {
-            content,
-            lastMessageId: old ? old.lastMessageId : null
-        };
+        const notes = stickies[channelId] || [];
 
-        clearTimeout(timers.get(message.channel.id));
+        if (notes.length >= MAX_NOTES) {
+            return message.reply(
+                "This channel already has " + MAX_NOTES +
+                " sticky notes. Remove one with `!unsticky <number>` first."
+            );
+        }
+
+        notes.push({ content, lastMessageId: null });
+        stickies[channelId] = notes;
+
+        clearTimeout(timers.get(channelId));
         await repostSticky(message.channel);
         return;
     }
 
-    if (command === "unsticky") {
-        if (!canManage(message)) {
-            return message.reply("You need the Manage Messages permission to do that.");
-        }
-        const sticky = stickies[message.channel.id];
-        if (!sticky) {
-            return message.reply("There's no sticky note in this channel.");
+    /* ----- !stickies : list notes ----- */
+    if (command === "stickies") {
+        const notes = stickies[channelId];
+
+        if (!notes || notes.length === 0) {
+            return message.reply("There are no sticky notes in this channel.");
         }
 
-        clearTimeout(timers.get(message.channel.id));
-        await deleteOld(message.channel, sticky);
-        delete stickies[message.channel.id];
+        const lines = notes.map((note, i) => {
+            const short = note.content.replace(/\n/g, " ").slice(0, 80);
+            return (i + 1) + ". " + short + (note.content.length > 80 ? "..." : "");
+        });
+
+        return message.reply("**📌 Sticky notes in this channel:**\n" + lines.join("\n"));
+    }
+
+    /* ----- !editsticky <number> <new text> ----- */
+    if (command === "editsticky") {
+        const notes = stickies[channelId];
+        const match = content.match(/^(\d+)\s+([\s\S]+)$/);
+
+        if (!notes || notes.length === 0) {
+            return message.reply("There are no sticky notes in this channel.");
+        }
+        if (!match) {
+            return message.reply("**Usage:** `!editsticky <number> <new text>`");
+        }
+
+        const index = parseInt(match[1], 10) - 1;
+        const newText = match[2].trim();
+
+        if (index < 0 || index >= notes.length) {
+            return message.reply("There's no sticky number " + (index + 1) + ".");
+        }
+        if (newText.length > 1900) {
+            return message.reply("That note is too long. Keep it under 1900 characters.");
+        }
+
+        notes[index].content = newText;
+
+        clearTimeout(timers.get(channelId));
+        await repostSticky(message.channel);
+        return;
+    }
+
+    /* ----- !unsticky [number|all] ----- */
+    if (command === "unsticky") {
+        const notes = stickies[channelId];
+
+        if (!notes || notes.length === 0) {
+            return message.reply("There are no sticky notes in this channel.");
+        }
+
+        clearTimeout(timers.get(channelId));
+
+        if (content.toLowerCase() === "all") {
+            for (const note of notes) {
+                await deleteMessage(message.channel, note.lastMessageId);
+            }
+            delete stickies[channelId];
+            saveStickies();
+            return message.reply("📌 Removed all sticky notes.");
+        }
+
+        let index;
+
+        if (!content && notes.length === 1) {
+            index = 0;
+        } else if (/^\d+$/.test(content)) {
+            index = parseInt(content, 10) - 1;
+        } else {
+            return message.reply(
+                "**Usage:** `!unsticky <number>` or `!unsticky all`\n" +
+                "Use `!stickies` to see the numbers."
+            );
+        }
+
+        if (index < 0 || index >= notes.length) {
+            return message.reply("There's no sticky number " + (index + 1) + ".");
+        }
+
+        await deleteMessage(message.channel, notes[index].lastMessageId);
+        notes.splice(index, 1);
+
+        if (notes.length === 0) {
+            delete stickies[channelId];
+            saveStickies();
+            return message.reply("📌 Removed. No sticky notes left in this channel.");
+        }
+
         saveStickies();
-        return message.reply("");
+        await repostSticky(message.channel); // renumbers the rest
+        return;
     }
 
     if (command === "stickyhelp") {
         return message.reply(
             [
-                "****",
-                "`!sticky <note>` — Keep a note at the bottom of this channel",
-                "`!unsticky` — Remove the note",
-                "Needs the Manage Messages permission."
+                "**📌 STICKY BOT**",
+                "`!sticky <note>` — Add a sticky note (up to " + MAX_NOTES + " per channel)",
+                "`!stickies` — List the notes in this channel",
+                "`!editsticky <number> <text>` — Edit a note",
+                "`!unsticky <number>` — Remove one note",
+                "`!unsticky all` — Remove every note",
+                "Adding, editing and removing need the Manage Messages permission."
             ].join("\n")
         );
     }
